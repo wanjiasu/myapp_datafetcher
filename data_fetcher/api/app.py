@@ -1,4 +1,5 @@
 import os
+import sys
 import asyncio
 from datetime import datetime, timedelta, timezone
 from typing import List
@@ -53,9 +54,21 @@ async def _midnight_loop():
         _run_once_for_dates(_dates_utc_window())
 
 
+async def _twoam_loop():
+    while True:
+        now = datetime.now(timezone.utc)
+        target = datetime(year=now.year, month=now.month, day=now.day, hour=2, tzinfo=timezone.utc)
+        if now >= target:
+            target = target + timedelta(days=1)
+        await asyncio.sleep((target - now).total_seconds())
+        p = await asyncio.create_subprocess_exec(sys.executable, "-m", "data_fetcher.tools.get_odds_match")
+        await p.wait()
+
+
 @app.on_event("startup")
 async def _startup():
     asyncio.create_task(_midnight_loop())
+    asyncio.create_task(_twoam_loop())
 
 
 @app.get("/health")
@@ -72,4 +85,3 @@ async def run_now():
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host=os.getenv("HOST", "0.0.0.0"), port=int(os.getenv("PORT", "8000")))
-
