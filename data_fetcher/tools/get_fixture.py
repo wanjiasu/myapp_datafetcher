@@ -124,6 +124,7 @@ class APIFootballClient:
             'score_extratime_away': et.get('away'),
             'score_penalty_home': pn.get('home'),
             'score_penalty_away': pn.get('away'),
+            'teams_vs': (th.get('name') or '') + ' VS ' + (ta.get('name') or ''),
             'raw': fx,
         }
         return row
@@ -270,11 +271,13 @@ def _pg_ensure_table(conn) -> None:
             score_extratime_away INT,
             score_penalty_home INT,
             score_penalty_away INT,
+            teams_vs TEXT,
             created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
             updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
         )
         """
     )
+    cur.execute("ALTER TABLE api_football_fixtures ADD COLUMN IF NOT EXISTS teams_vs TEXT")
     cur.execute("COMMENT ON TABLE api_football_fixtures IS 'API-Football fixtures结构化数据'")
     cur.execute("COMMENT ON COLUMN api_football_fixtures.fixture_id IS '比赛唯一ID'")
     cur.execute("COMMENT ON COLUMN api_football_fixtures.fixture_date IS '比赛日期时间(含时区偏移)'")
@@ -315,6 +318,8 @@ def _pg_ensure_table(conn) -> None:
     cur.execute("COMMENT ON COLUMN api_football_fixtures.score_extratime_away IS '加时客队比分'")
     cur.execute("COMMENT ON COLUMN api_football_fixtures.score_penalty_home IS '点球主队进球数'")
     cur.execute("COMMENT ON COLUMN api_football_fixtures.score_penalty_away IS '点球客队进球数'")
+    cur.execute("COMMENT ON COLUMN api_football_fixtures.teams_vs IS '主客队拼接: <主队> VS <客队>'")
+    cur.execute("CREATE INDEX IF NOT EXISTS api_football_fixtures_teams_vs_trgm ON api_football_fixtures USING gin (teams_vs gin_trgm_ops)")
     cur.execute("COMMENT ON COLUMN api_football_fixtures.created_at IS '创建时间(插入时间)'")
     cur.execute("COMMENT ON COLUMN api_football_fixtures.updated_at IS '更新时间(最后刷新时间)'")
     conn.commit()
@@ -339,7 +344,7 @@ def _pg_upsert(conn, rows: List[Dict[str, Any]]) -> int:
         'league_country','league_season','league_round','league_logo','league_flag','league_standings','home_id','home_name',
         'home_logo','home_winner','away_id','away_name','away_logo','away_winner','goals_home','goals_away',
         'score_halftime_home','score_halftime_away','score_fulltime_home','score_fulltime_away','score_extratime_home',
-        'score_extratime_away','score_penalty_home','score_penalty_away'
+        'score_extratime_away','score_penalty_home','score_penalty_away','teams_vs'
     ]
     cur = conn.cursor()
     count = 0
@@ -391,6 +396,7 @@ def _pg_upsert(conn, rows: List[Dict[str, Any]]) -> int:
             score_extratime_away=EXCLUDED.score_extratime_away,
             score_penalty_home=EXCLUDED.score_penalty_home,
             score_penalty_away=EXCLUDED.score_penalty_away,
+            teams_vs=EXCLUDED.teams_vs,
             updated_at=now()
             """,
             values
@@ -399,6 +405,64 @@ def _pg_upsert(conn, rows: List[Dict[str, Any]]) -> int:
     conn.commit()
     cur.close()
     return count
+
+
+def _pg_set_similarity_limit(conn, limit: float) -> None:
+    cur = conn.cursor()
+    cur.execute("SELECT set_limit(%s)", (float(limit),))
+    conn.commit()
+    cur.close()
+
+
+def _pg_search_teams_vs_similarity(conn, keyword: str, limit: int = 20) -> List[Dict[str, Any]]:
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT fixture_id, teams_vs, league_name, fixture_date, similarity(teams_vs, %s) AS sim
+        FROM api_football_fixtures
+        WHERE teams_vs % %s
+        ORDER BY sim DESC
+        LIMIT %s
+        """,
+        (keyword, keyword, int(limit),)
+    )
+    rows = cur.fetchall()
+    cur.close()
+    out: List[Dict[str, Any]] = []
+    for r in rows:
+        out.append({
+            'fixture_id': r[0],
+            'teams_vs': r[1],
+            'league_name': r[2],
+            'fixture_date': r[3].isoformat() if r[3] else None,
+            'similarity': r[4],
+        })
+    return out
+
+
+def _pg_search_teams_vs_fuzzy(conn, keyword: str, limit: int = 20) -> List[Dict[str, Any]]:
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT fixture_id, teams_vs, league_name, fixture_date
+        FROM api_football_fixtures
+        WHERE teams_vs ILIKE %s
+        ORDER BY fixture_date DESC NULLS LAST
+        LIMIT %s
+        """,
+        (f"%{keyword}%", int(limit),)
+    )
+    rows = cur.fetchall()
+    cur.close()
+    out: List[Dict[str, Any]] = []
+    for r in rows:
+        out.append({
+            'fixture_id': r[0],
+            'teams_vs': r[1],
+            'league_name': r[2],
+            'fixture_date': r[3].isoformat() if r[3] else None,
+        })
+    return out
 
 
 def main():
