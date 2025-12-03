@@ -88,9 +88,32 @@ async def _twoam_loop():
         await p.wait()
 
 
+def _interval_hours() -> int:
+    try:
+        v = int(os.getenv("FETCH_INTERVAL_HOURS", "3"))
+        return 1 if v < 1 else (24 if v > 24 else v)
+    except Exception:
+        return 3
+
+
+async def _interval_loop():
+    while True:
+        tz = _tz()
+        now = datetime.now(tz)
+        ih = _interval_hours()
+        base = now.replace(minute=0, second=0, microsecond=0)
+        q = (base.hour // ih) + 1
+        nh = (q * ih) % 24
+        day_add = 1 if nh <= base.hour else 0
+        target = base.replace(hour=nh) + timedelta(days=day_add)
+        sleep_s = max(0.0, (target - now).total_seconds())
+        await asyncio.sleep(sleep_s)
+        _run_once_for_dates(_dates_utc_window())
+
+
 @app.on_event("startup")
 async def _startup():
-    asyncio.create_task(_midnight_loop())
+    asyncio.create_task(_interval_loop())
     asyncio.create_task(_twoam_loop())
 
 
